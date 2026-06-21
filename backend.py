@@ -1,406 +1,387 @@
 import sqlite3
-import os
-
-DB_FILE = 'school_portal.db'
 
 
 # ==========================================
-# DATABASE INITIALIZATION
+# SETUP & AUTHENTICATION
 # ==========================================
-
 def setup_database():
-    """Connects to the database and creates tables if they don't exist."""
-    is_new_db = not os.path.exists(DB_FILE)
-
-    conn = sqlite3.connect(DB_FILE)
+    conn = sqlite3.connect('school_portal.db')
     cursor = conn.cursor()
-
-    # Enable foreign key support for cascading deletes/updates
     cursor.execute('PRAGMA foreign_keys = ON')
 
-    if is_new_db:
-        print("Initializing new database...")
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS Teachers (
+            teacher_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL
+        )
+    ''')
 
-        # 1. Teachers Table
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS Teachers (
-                teacher_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL
-            )
-        ''')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS Logins (
+            login_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            teacher_id INTEGER,
+            password TEXT NOT NULL,
+            user_level TEXT NOT NULL,
+            force_pw_change INTEGER DEFAULT 1,
+            FOREIGN KEY (teacher_id) REFERENCES Teachers (teacher_id) ON DELETE CASCADE
+        )
+    ''')
 
-        # 2. Logins Table (Updated with Super_User and force_pw_change)
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS Logins (
-                teacher_id INTEGER PRIMARY KEY,
-                password TEXT NOT NULL,
-                user_level TEXT CHECK(user_level IN ('Admin', 'Super_User', 'User')) NOT NULL,
-                force_pw_change INTEGER DEFAULT 1,
-                FOREIGN KEY(teacher_id) REFERENCES Teachers(teacher_id) ON DELETE CASCADE
-            )
-        ''')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS Students (
+            student_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            grade_level INTEGER NOT NULL
+        )
+    ''')
 
-        # 3. Classes Table (Many-to-1 relationship with Teachers)
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS Classes (
-                class_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                class_name TEXT NOT NULL,
-                teacher_id INTEGER,
-                FOREIGN KEY(teacher_id) REFERENCES Teachers(teacher_id) ON DELETE SET NULL
-            )
-        ''')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS Classes (
+            class_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            class_name TEXT NOT NULL,
+            teacher_id INTEGER,
+            FOREIGN KEY (teacher_id) REFERENCES Teachers (teacher_id) ON DELETE SET NULL
+        )
+    ''')
 
-        # 4. Students Table
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS Students (
-                student_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL,
-                grade_level INTEGER NOT NULL
-            )
-        ''')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS Rosters (
+            roster_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            class_id INTEGER,
+            student_id INTEGER,
+            FOREIGN KEY (class_id) REFERENCES Classes (class_id) ON DELETE CASCADE,
+            FOREIGN KEY (student_id) REFERENCES Students (student_id) ON DELETE CASCADE,
+            UNIQUE(class_id, student_id)
+        )
+    ''')
 
-        # 5. Rosters Table (Many-to-Many relationship)
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS Rosters (
-                class_id INTEGER,
-                student_id INTEGER,
-                PRIMARY KEY (class_id, student_id),
-                FOREIGN KEY(class_id) REFERENCES Classes(class_id) ON DELETE CASCADE,
-                FOREIGN KEY(student_id) REFERENCES Students(student_id) ON DELETE CASCADE
-            )
-        ''')
-
-        # Create the Base Admin Profile
-        cursor.execute("INSERT INTO Teachers (name) VALUES ('Base Admin')")
-        admin_id = cursor.lastrowid
-
-        cursor.execute('''
-            INSERT INTO Logins (teacher_id, password, user_level, force_pw_change) 
-            VALUES (?, ?, ?, ?)
-        ''', (admin_id, 'Admin', 'Admin', 0))
-
+    cursor.execute("SELECT * FROM Teachers WHERE teacher_id = 1")
+    if not cursor.fetchone():
+        cursor.execute("INSERT INTO Teachers (teacher_id, name) VALUES (1, 'Admin')")
+        cursor.execute(
+            "INSERT INTO Logins (teacher_id, password, user_level, force_pw_change) VALUES (1, 'admin', 'Admin', 1)")
         conn.commit()
-        print("Database built and Base Admin created successfully.")
-    else:
-        print("Database already exists. Waiting for frontend input...")
 
     return conn
 
 
-# ==========================================
-# CREATE FUNCTIONS (Adding Data)
-# ==========================================
-
-def add_new_teacher(conn, name, user_level="User"):
-    """Adds a new teacher and creates their Login profile with default password."""
-    cursor = conn.cursor()
-    default_password = "password"
-    try:
-        cursor.execute("INSERT INTO Teachers (name) VALUES (?)", (name,))
-        new_teacher_id = cursor.lastrowid
-
-        cursor.execute('''
-            INSERT INTO Logins (teacher_id, password, user_level) 
-            VALUES (?, ?, ?)
-        ''', (new_teacher_id, default_password, user_level))
-
-        conn.commit()
-        print(f"Success: Teacher '{name}' added with ID {new_teacher_id}.")
-        return new_teacher_id
-    except sqlite3.Error as e:
-        print(f"An error occurred while adding the teacher: {e}")
-        conn.rollback()
-
-
-def add_new_class(conn, class_name):
-    """Creates a new class with no teacher assigned yet."""
-    cursor = conn.cursor()
-    try:
-        cursor.execute("INSERT INTO Classes (class_name) VALUES (?)", (class_name,))
-        new_class_id = cursor.lastrowid
-        conn.commit()
-        print(f"Success: Class '{class_name}' added with ID {new_class_id}.")
-        return new_class_id
-    except sqlite3.Error as e:
-        print(f"An error occurred while adding the class: {e}")
-        conn.rollback()
-
-
-def add_new_student(conn, student_name, grade_level):
-    """Adds a new student to the database."""
-    cursor = conn.cursor()
-    try:
-        cursor.execute("INSERT INTO Students (name, grade_level) VALUES (?, ?)", (student_name, grade_level))
-        new_student_id = cursor.lastrowid
-        conn.commit()
-        print(f"Success: Student '{student_name}' added with ID {new_student_id}.")
-        return new_student_id
-    except sqlite3.Error as e:
-        print(f"An error occurred while adding the student: {e}")
-        conn.rollback()
-
-
-def assign_teacher_to_class(conn, class_id, teacher_id):
-    """Assigns an existing teacher to an existing class."""
-    cursor = conn.cursor()
-    cursor.execute("UPDATE Classes SET teacher_id = ? WHERE class_id = ?", (teacher_id, class_id))
-    conn.commit()
-    print(f"Teacher {teacher_id} assigned to Class {class_id}.")
-
-
-def add_student_to_class(conn, class_id, student_id):
-    """Adds a student to a class roster."""
-    cursor = conn.cursor()
-    try:
-        cursor.execute("INSERT INTO Rosters (class_id, student_id) VALUES (?, ?)", (class_id, student_id))
-        conn.commit()
-        print(f"Student {student_id} added to Class {class_id}.")
-    except sqlite3.IntegrityError:
-        print("Error: Student is already in this class or ID doesn't exist.")
-
-
-# ==========================================
-# READ FUNCTIONS (Retrieving Data)
-# ==========================================
-
 def verify_login(conn, teacher_id, password):
-    """Checks credentials and returns session data if successful."""
     cursor = conn.cursor()
     cursor.execute('''
-        SELECT Teachers.name, Logins.user_level, Logins.force_pw_change 
+        SELECT Logins.user_level, Logins.force_pw_change, Teachers.name 
         FROM Logins 
         JOIN Teachers ON Logins.teacher_id = Teachers.teacher_id
         WHERE Logins.teacher_id = ? AND Logins.password = ?
     ''', (teacher_id, password))
-
     result = cursor.fetchone()
     if result:
-        print(f"Login successful for {result[0]}.")
         return {
-            "teacher_id": teacher_id,
-            "name": result[0],
-            "user_level": result[1],
-            "force_pw_change": bool(result[2])
+            'teacher_id': teacher_id,
+            'name': result[2],
+            'user_level': result[0],
+            'force_pw_change': result[1]
         }
-    else:
-        print("Login failed: Invalid ID or password.")
-        return None
+    return None
 
 
-def get_all_teachers_with_classes(conn):
-    """Returns a list of all teachers and a string of their classes."""
+def update_password(conn, teacher_id, current_pw, new_pw):
     cursor = conn.cursor()
-    cursor.execute('''
-        SELECT Teachers.teacher_id, Teachers.name, 
-               GROUP_CONCAT(Classes.class_name, ', ') AS class_list
-        FROM Teachers
-        LEFT JOIN Classes ON Teachers.teacher_id = Classes.teacher_id
-        GROUP BY Teachers.teacher_id
-    ''')
-    teachers = cursor.fetchall()
-    return teachers
+    cursor.execute("SELECT * FROM Logins WHERE teacher_id = ? AND password = ?", (teacher_id, current_pw))
+    if cursor.fetchone():
+        cursor.execute("UPDATE Logins SET password = ?, force_pw_change = 0 WHERE teacher_id = ?", (new_pw, teacher_id))
+        conn.commit()
+        return True
+    return False
 
 
-def get_all_students_with_classes(conn):
-    """Returns a list of all students and a string of their enrolled classes."""
+# ==========================================
+# CREATION FUNCTIONS
+# ==========================================
+def add_new_teacher(conn, name):
     cursor = conn.cursor()
-    cursor.execute('''
-        SELECT Students.student_id, Students.name, Students.grade_level,
-               GROUP_CONCAT(Classes.class_name, ', ') AS enrolled_classes
-        FROM Students
-        LEFT JOIN Rosters ON Students.student_id = Rosters.student_id
-        LEFT JOIN Classes ON Rosters.class_id = Classes.class_id
-        GROUP BY Students.student_id
-    ''')
-    students = cursor.fetchall()
-    return students
+    try:
+        cursor.execute("INSERT INTO Teachers (name) VALUES (?)", (name,))
+        new_teacher_id = cursor.lastrowid
+        cursor.execute(
+            "INSERT INTO Logins (teacher_id, password, user_level, force_pw_change) VALUES (?, 'welcome', 'User', 1)",
+            (new_teacher_id,))
+        conn.commit()
+        return new_teacher_id
+    except sqlite3.Error:
+        conn.rollback()
+        return False
 
 
-def get_teacher_homepage_data(conn, teacher_id):
-    """Returns a dictionary of a teacher's classes and their student rosters."""
+def add_new_student(conn, name, grade_level):
     cursor = conn.cursor()
-    homepage_data = {}
+    try:
+        cursor.execute("INSERT INTO Students (name, grade_level) VALUES (?, ?)", (name, grade_level))
+        conn.commit()
+        return cursor.lastrowid
+    except sqlite3.Error:
+        conn.rollback()
+        return False
 
+
+def add_new_class(conn, class_name):
+    cursor = conn.cursor()
+    try:
+        cursor.execute("INSERT INTO Classes (class_name) VALUES (?)", (class_name,))
+        conn.commit()
+        return cursor.lastrowid
+    except sqlite3.Error:
+        conn.rollback()
+        return False
+
+
+# ==========================================
+# READ FUNCTIONS
+# ==========================================
+def get_user_level(conn, teacher_id):
+    cursor = conn.cursor()
+    cursor.execute("SELECT user_level FROM Logins WHERE teacher_id = ?", (teacher_id,))
+    result = cursor.fetchone()
+    return result[0] if result else None
+
+
+def get_teacher_list(conn):
+    cursor = conn.cursor()
+    cursor.execute("SELECT teacher_id, name FROM Teachers WHERE teacher_id != 1 ORDER BY name")
+    return cursor.fetchall()
+
+
+def get_student_list(conn):
+    cursor = conn.cursor()
+    cursor.execute("SELECT student_id, name, grade_level FROM Students ORDER BY name")
+    return cursor.fetchall()
+
+
+def get_class_list(conn):
+    cursor = conn.cursor()
+    cursor.execute("SELECT class_id, class_name FROM Classes ORDER BY class_name")
+    return cursor.fetchall()
+
+
+def get_teacher_classes(conn, teacher_id):
+    cursor = conn.cursor()
     cursor.execute("SELECT class_id, class_name FROM Classes WHERE teacher_id = ?", (teacher_id,))
-    classes = cursor.fetchall()
-
-    if not classes:
-        return homepage_data
-
-    for class_id, class_name in classes:
-        cursor.execute('''
-            SELECT Students.name 
-            FROM Rosters
-            JOIN Students ON Rosters.student_id = Students.student_id
-            WHERE Rosters.class_id = ?
-        ''', (class_id,))
-        students = [row[0] for row in cursor.fetchall()]
-        homepage_data[class_name] = students
-
-    return homepage_data
+    return cursor.fetchall()
 
 
-def search_students(conn, search_term):
-    """
-    Searches for a student by ID (exact match) or Name (partial match).
-    Returns a list of matching students and their enrolled classes.
-    """
+def get_class_students(conn, class_id):
     cursor = conn.cursor()
-
-    # Prepare the search string for the LIKE clause
-    # Adding % on both sides means "find this text anywhere in the name"
-    like_term = f"%{search_term}%"
-
-    # We use a LEFT JOIN just like the global directory to ensure students
-    # with zero classes still show up in the search results.
     cursor.execute('''
-        SELECT Students.student_id, Students.name, Students.grade_level,
-               GROUP_CONCAT(Classes.class_name, ', ') AS enrolled_classes
-        FROM Students
-        LEFT JOIN Rosters ON Students.student_id = Rosters.student_id
-        LEFT JOIN Classes ON Rosters.class_id = Classes.class_id
-        WHERE Students.student_id = ? OR Students.name LIKE ?
-        GROUP BY Students.student_id
-    ''', (search_term, like_term))
+        SELECT s.student_id, s.name, s.grade_level 
+        FROM Students s
+        JOIN Rosters r ON s.student_id = r.student_id
+        WHERE r.class_id = ?
+    ''', (class_id,))
+    return cursor.fetchall()
 
-    results = cursor.fetchall()
 
-    # Handle the feedback safely
-    if not results:
-        print(f"No students found matching '{search_term}'.")
-        return []  # Return an empty list so the frontend knows there are no results
-
-    print(f"\n--- Search Results for '{search_term}' ---")
-    for s_id, name, grade, classes in results:
-        class_display = classes if classes else "Not enrolled in any classes"
-        print(f"ID: {s_id} | Name: {name} | Grade: {grade} | Classes: {class_display}")
-
-    return results
-# ==========================================
-# UPDATE FUNCTIONS (Modifying Data)
-# ==========================================
-
-def admin_reset_password(conn, teacher_id, new_temp_password):
-    """Admin function to reset password and force a change on next login."""
+def get_student_classes(conn, student_id):
     cursor = conn.cursor()
+    cursor.execute('''
+        SELECT c.class_id, c.class_name 
+        FROM Classes c
+        JOIN Rosters r ON c.class_id = r.class_id
+        WHERE r.student_id = ?
+    ''', (student_id,))
+    return cursor.fetchall()
+
+
+def get_class_teacher(conn, class_id):
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT t.teacher_id, t.name 
+        FROM Teachers t
+        JOIN Classes c ON t.teacher_id = c.teacher_id
+        WHERE c.class_id = ?
+    ''', (class_id,))
+    return cursor.fetchone()
+
+
+# ==========================================
+# UPDATE & ASSIGNMENT FUNCTIONS
+# ==========================================
+def admin_reset_password(conn, target_id, new_temp_password, requester_id):
+    """Resets password, enforcing strict hierarchical RBAC."""
+    if target_id == 1:
+        return False
+
+    cursor = conn.cursor()
+    cursor.execute("SELECT user_level FROM Logins WHERE teacher_id = ?", (target_id,))
+    target_res = cursor.fetchone()
+    if not target_res: return False
+    target_level = target_res[0]
+
+    cursor.execute("SELECT user_level FROM Logins WHERE teacher_id = ?", (requester_id,))
+    req_res = cursor.fetchone()
+    if not req_res: return False
+    req_level = req_res[0]
+
+    # NEW SECURITY RULES
+    if req_level == 'Super_User':
+        if target_level in ['Super_User', 'Admin']: return False
+    elif req_level == 'Admin' and requester_id != 1:
+        if target_level == 'Admin': return False
+
     try:
         cursor.execute("UPDATE Logins SET password = ?, force_pw_change = 1 WHERE teacher_id = ?",
-                       (new_temp_password, teacher_id))
-        if cursor.rowcount == 0:
-            print(f"Error: Teacher ID {teacher_id} not found.")
-        else:
-            conn.commit()
-            print(f"Success: Password reset for Teacher {teacher_id}.")
-    except sqlite3.Error as e:
-        print(f"Error during password reset: {e}")
+                       (new_temp_password, target_id))
+        if cursor.rowcount == 0: return False
+        conn.commit()
+        return True
+    except sqlite3.Error:
         conn.rollback()
+        return False
 
 
-def update_user_level(conn, teacher_id, new_level):
-    """Admin function to change a teacher's user level."""
+def update_user_level(conn, target_id, new_level, requester_id):
+    """Updates user levels, enforcing strict hierarchical RBAC."""
+    if target_id == 1:
+        return False
     if new_level not in ['Admin', 'Super_User', 'User']:
-        print("Error: Invalid user level.")
-        return
+        return False
+
+    cursor = conn.cursor()
+    cursor.execute("SELECT user_level FROM Logins WHERE teacher_id = ?", (target_id,))
+    target_res = cursor.fetchone()
+    if not target_res: return False
+    target_level = target_res[0]
+
+    cursor.execute("SELECT user_level FROM Logins WHERE teacher_id = ?", (requester_id,))
+    req_res = cursor.fetchone()
+    if not req_res: return False
+    req_level = req_res[0]
+
+    # NEW SECURITY RULES
+    if req_level == 'Super_User':
+        if target_level in ['Super_User', 'Admin']: return False
+    elif req_level == 'Admin' and requester_id != 1:
+        if target_level == 'Admin': return False
+
+    try:
+        cursor.execute("UPDATE Logins SET user_level = ? WHERE teacher_id = ?", (new_level, target_id))
+        if cursor.rowcount == 0: return False
+        conn.commit()
+        return True
+    except sqlite3.Error:
+        conn.rollback()
+        return False
+
+
+def update_teacher_name(conn, teacher_id, new_name):
     cursor = conn.cursor()
     try:
-        cursor.execute("UPDATE Logins SET user_level = ? WHERE teacher_id = ?", (new_level, teacher_id))
-        if cursor.rowcount == 0:
-            print(f"Error: Teacher ID {teacher_id} not found.")
-        else:
-            conn.commit()
-            print(f"Success: Teacher {teacher_id} level updated to {new_level}.")
-    except sqlite3.Error as e:
-        print(f"Error updating user level: {e}")
+        cursor.execute("UPDATE Teachers SET name = ? WHERE teacher_id = ?", (new_name, teacher_id))
+        conn.commit()
+        return True
+    except sqlite3.Error:
         conn.rollback()
+        return False
 
 
-def remove_teacher_from_class(conn, class_id):
-    """Unassigns a teacher from a class by setting teacher_id to NULL."""
+def update_student(conn, student_id, new_name, new_grade):
     cursor = conn.cursor()
     try:
-        cursor.execute("UPDATE Classes SET teacher_id = NULL WHERE class_id = ?", (class_id,))
-        if cursor.rowcount == 0:
-            print(f"Error: Class ID {class_id} not found.")
-        else:
-            conn.commit()
-            print(f"Success: Teacher removed from Class {class_id}.")
-    except sqlite3.Error as e:
-        print(f"Error unassigning teacher: {e}")
+        cursor.execute("UPDATE Students SET name = ?, grade_level = ? WHERE student_id = ?",
+                       (new_name, new_grade, student_id))
+        conn.commit()
+        return True
+    except sqlite3.Error:
         conn.rollback()
+        return False
 
 
-# ==========================================
-# DELETE FUNCTIONS (Removing Data)
-# ==========================================
-
-def delete_teacher(conn, teacher_id):
-    """Deletes teacher. Cascades to Logins, sets NULL in Classes."""
+def update_class_name(conn, class_id, new_name):
     cursor = conn.cursor()
     try:
-        cursor.execute("DELETE FROM Teachers WHERE teacher_id = ?", (teacher_id,))
-        if cursor.rowcount == 0:
-            print(f"Error: Teacher ID {teacher_id} not found.")
-        else:
-            conn.commit()
-            print(f"Success: Teacher {teacher_id} deleted.")
-    except sqlite3.Error as e:
-        print(f"Error deleting teacher: {e}")
+        cursor.execute("UPDATE Classes SET class_name = ? WHERE class_id = ?", (new_name, class_id))
+        conn.commit()
+        return True
+    except sqlite3.Error:
         conn.rollback()
+        return False
 
 
-def delete_class(conn, class_id):
-    """Deletes class. Cascades to Rosters."""
+def assign_teacher_to_class(conn, class_id, teacher_id):
     cursor = conn.cursor()
     try:
-        cursor.execute("DELETE FROM Classes WHERE class_id = ?", (class_id,))
-        if cursor.rowcount == 0:
-            print(f"Error: Class ID {class_id} not found.")
-        else:
-            conn.commit()
-            print(f"Success: Class {class_id} deleted.")
-    except sqlite3.Error as e:
-        print(f"Error deleting class: {e}")
+        cursor.execute("UPDATE Classes SET teacher_id = ? WHERE class_id = ?", (teacher_id, class_id))
+        conn.commit()
+        return True
+    except sqlite3.Error:
         conn.rollback()
+        return False
 
 
-def delete_student(conn, student_id):
-    """Deletes student. Cascades to Rosters."""
+def add_student_to_class(conn, class_id, student_id):
     cursor = conn.cursor()
     try:
-        cursor.execute("DELETE FROM Students WHERE student_id = ?", (student_id,))
-        if cursor.rowcount == 0:
-            print(f"Error: Student ID {student_id} not found.")
-        else:
-            conn.commit()
-            print(f"Success: Student {student_id} deleted.")
-    except sqlite3.Error as e:
-        print(f"Error deleting student: {e}")
-        conn.rollback()
+        cursor.execute("INSERT INTO Rosters (class_id, student_id) VALUES (?, ?)", (class_id, student_id))
+        conn.commit()
+        return True
+    except sqlite3.IntegrityError:
+        return False
 
 
 def remove_student_from_class(conn, class_id, student_id):
-    """Removes a specific student from a specific class roster."""
     cursor = conn.cursor()
     try:
         cursor.execute("DELETE FROM Rosters WHERE class_id = ? AND student_id = ?", (class_id, student_id))
-        if cursor.rowcount == 0:
-            print(f"Notice: Student {student_id} not in Class {class_id}.")
-        else:
-            conn.commit()
-            print(f"Success: Student {student_id} removed from Class {class_id}.")
-    except sqlite3.Error as e:
-        print(f"Error modifying roster: {e}")
+        conn.commit()
+        return True
+    except sqlite3.Error:
+        return False
+
+
+def remove_teacher_from_class(conn, class_id):
+    cursor = conn.cursor()
+    try:
+        cursor.execute("UPDATE Classes SET teacher_id = NULL WHERE class_id = ?", (class_id,))
+        conn.commit()
+        return True
+    except sqlite3.Error:
+        return False
+
+
+# ==========================================
+# DELETE FUNCTIONS
+# ==========================================
+def delete_teacher(conn, teacher_id):
+    if teacher_id == 1: return False
+    cursor = conn.cursor()
+    try:
+        cursor.execute("UPDATE Classes SET teacher_id = NULL WHERE teacher_id = ?", (teacher_id,))
+        cursor.execute("DELETE FROM Logins WHERE teacher_id = ?", (teacher_id,))
+        cursor.execute("DELETE FROM Teachers WHERE teacher_id = ?", (teacher_id,))
+        conn.commit()
+        return True
+    except sqlite3.Error:
         conn.rollback()
+        return False
 
 
-# ==========================================
-# MAIN EXECUTION
-# ==========================================
+def delete_student(conn, student_id):
+    cursor = conn.cursor()
+    try:
+        cursor.execute("DELETE FROM Rosters WHERE student_id = ?", (student_id,))
+        cursor.execute("DELETE FROM Students WHERE student_id = ?", (student_id,))
+        conn.commit()
+        return True
+    except sqlite3.Error:
+        conn.rollback()
+        return False
 
-if __name__ == '__main__':
-    # Initialize the database and get the connection
-    db_connection = setup_database()
 
-    # You can test your functions here by calling them, for example:
-    # new_teacher = add_new_teacher(db_connection, "Mr. Smith", "User")
-    # print(get_all_teachers_with_classes(db_connection))
+def delete_class(conn, class_id):
+    cursor = conn.cursor()
+    try:
+        cursor.execute("DELETE FROM Rosters WHERE class_id = ?", (class_id,))
+        cursor.execute("DELETE FROM Classes WHERE class_id = ?", (class_id,))
+        conn.commit()
+        return True
+    except sqlite3.Error:
+        conn.rollback()
+        return False
